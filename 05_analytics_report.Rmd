@@ -1,0 +1,394 @@
+---
+title: "Heracletes Advisors — Expense Datamart Report"
+author: "Akshay Bannatti"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, eval=TRUE, warning=FALSE, message=FALSE, author="Akshay Bannatti"}
+
+rm(list = ls())
+
+# Packages
+if (!requireNamespace("RMySQL", quietly = TRUE)) install.packages("RMySQL")
+if (!requireNamespace("DBI",    quietly = TRUE)) install.packages("DBI")
+
+library(RMySQL)
+library(DBI)
+
+# MySQL Connection 
+db_host <- Sys.getenv("MYSQL_HOST",     "mysql-28668c4b-dmspracticum.a.aivencloud.com")
+db_port <- as.integer(Sys.getenv("MYSQL_PORT", "15136"))
+db_name <- Sys.getenv("MYSQL_DBNAME",   "defaultdb")
+db_user <- Sys.getenv("MYSQL_USER",     "avnadmin")
+db_password <- Sys.getenv("MYSQL_PASSWORD", "AVNS_IViZllANiN9ObvmKOnU")
+db_ssl_ca <- Sys.getenv("MYSQL_SSL_CA",
+  "C:/Users/admin/OneDrive/Documents/Practicum 1/CS5200.Practicum-I.BannattiA/CA Certificate.pem")
+
+mysql_con <- dbConnect(
+  RMySQL::MySQL(),
+  host = db_host,
+  port = db_port,
+  user = db_user,
+  password = db_password,
+  dbname = db_name,
+  ssl.ca = db_ssl_ca
+)
+cat("Connected to Aiven MySQL datamart.\n")
+```
+
+---
+
+## 1 · Data Overview
+
+### 1.1 Row counts across star schema
+
+```{r tableRowCounts, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+
+tables <- c("dim_date","dim_employee","dim_client",
+            "dim_project","dim_category","fact_expenses")
+
+counts <- sapply(tables, function(t) {
+  dbGetQuery(mysql_con,
+    sprintf("SELECT COUNT(*) AS n FROM `%s`", t))[[1,1]]
+})
+
+count_df <- data.frame(Table = tables, Rows = counts, row.names = NULL)
+print(count_df)
+```
+
+### 1.2 Fact table partition distribution
+
+```{r partitionCheck, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+
+partition_q <- dbGetQuery(mysql_con, "
+  SELECT
+    txn_year          AS year,
+    COUNT(*)          AS fact_rows,
+    ROUND(SUM(amount_local), 2) AS total_expense
+  FROM fact_expenses
+  GROUP BY txn_year
+  ORDER BY txn_year
+")
+print(partition_q)
+```
+
+---
+
+## 2 · Expense Analysis by Category
+
+### 2.1 Total and average expense per category (all time)
+
+```{r categoryTotals, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+cat_totals <- dbGetQuery(mysql_con, "
+  SELECT
+    c.category_name                      AS category,
+    COUNT(*)                             AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)        AS total_expense,
+    ROUND(AVG(f.amount_local), 2)        AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_category c ON f.category_key = c.category_key
+  GROUP BY c.category_name
+  ORDER BY total_expense
+")
+print(cat_totals)
+```
+
+### 2.2 Total expense per category per month
+
+```{r categoryByMonth, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+cat_month <- dbGetQuery(mysql_con, "
+  SELECT
+    d.year                               AS year,
+    d.month_name                         AS month,
+    d.month                              AS month_num,
+    c.category_name                      AS category,
+    ROUND(SUM(f.amount_local), 2)        AS total_expense
+  FROM fact_expenses f
+  JOIN dim_date     d ON f.date_key     = d.date_key
+  JOIN dim_category c ON f.category_key = c.category_key
+  GROUP BY d.year, d.month, d.month_name, c.category_name
+  ORDER BY d.year, d.month, c.category_name
+")
+
+
+print(head(cat_month, 10))
+```
+
+### 2.3 Total expense per category per quarter
+
+```{r categoryByQuarter, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+cat_quarter <- dbGetQuery(mysql_con, "
+  SELECT
+    f.txn_year                            AS year,
+    CONCAT('Q', f.txn_quarter)            AS quarter,
+    c.category_name                       AS category,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_category c ON f.category_key = c.category_key
+  GROUP BY f.txn_year, f.txn_quarter, c.category_name
+  ORDER BY f.txn_year, f.txn_quarter, c.category_name
+")
+print(cat_quarter)
+```
+
+---
+
+## 3 · Expense Analysis by Client
+
+### 3.1 Total and average expense per client
+
+```{r clientTotals, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+client_totals <- dbGetQuery(mysql_con, "
+  SELECT
+    cl.client_name                        AS client,
+    COUNT(*)                              AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_client cl ON f.client_key = cl.client_key
+  GROUP BY cl.client_name
+  ORDER BY total_expense
+")
+print(client_totals)
+```
+
+### 3.2 Total expense per client per month
+
+```{r clientByMonth, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+client_month <- dbGetQuery(mysql_con, "
+  SELECT
+    d.year                                AS year,
+    d.month_name                          AS month,
+    cl.client_name                        AS client,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense
+  FROM fact_expenses f
+  JOIN dim_date   d  ON f.date_key    = d.date_key
+  JOIN dim_client cl ON f.client_key  = cl.client_key
+  GROUP BY d.year, d.month_name, d.month, cl.client_name
+  ORDER BY d.year, d.month, cl.client_name
+")
+print(head(client_month, 10))
+```
+
+---
+
+## 4 · Expense Analysis by Project
+
+### 4.1 Total expense per project
+
+```{r projectTotals, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+proj_totals <- dbGetQuery(mysql_con, "
+  SELECT
+    p.project_id                          AS project_id,
+    p.project_name                        AS project,
+    cl.client_name                        AS client,
+    p.budget_usd                          AS budget_usd,
+    ROUND(SUM(f.amount_local), 2)         AS total_billed,
+    ROUND(SUM(f.amount_local) / p.budget_usd * 100, 2) AS pct_of_budget
+  FROM fact_expenses f
+  JOIN dim_project p  ON f.project_key = p.project_key
+  JOIN dim_client cl  ON p.client_key  = cl.client_key
+  -- billable filter removed: synthetic data loaded as billable=0
+  GROUP BY p.project_id, p.project_name, cl.client_name, p.budget_usd
+  ORDER BY total_billed
+")
+print(proj_totals)
+```
+
+### 4.2 Total expense per project per quarter
+
+```{r projectByQuarter, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+proj_quarter <- dbGetQuery(mysql_con, "
+  SELECT
+    f.txn_year                            AS year,
+    CONCAT('Q', f.txn_quarter)            AS quarter,
+    p.project_name                        AS project,
+    cl.client_name                        AS client,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense
+  FROM fact_expenses f
+  JOIN dim_project p  ON f.project_key = p.project_key
+  JOIN dim_client cl  ON p.client_key  = cl.client_key
+  -- billable filter removed: synthetic data loaded as billable=0
+  GROUP BY f.txn_year, f.txn_quarter, p.project_name, cl.client_name
+  ORDER BY f.txn_year, f.txn_quarter, p.project_name
+")
+print(proj_quarter)
+```
+
+---
+
+## 5 · Key Fact Table Query: Slice by Category + Client + Project + Period
+
+This is the primary analytical query fulfilling the requirement:
+*"expense total and average per category per client per project per month, quarter, and year"*
+
+### 5.1 Monthly slice
+
+```{r keyFactMonthly, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+monthly_slice <- dbGetQuery(mysql_con, "
+  SELECT
+    d.year                                AS year,
+    d.month_name                          AS month,
+    c.category_name                       AS category,
+    cl.client_name                        AS client,
+    p.project_name                        AS project,
+    COUNT(*)                              AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_date     d  ON f.date_key     = d.date_key
+  JOIN dim_category c  ON f.category_key = c.category_key
+  JOIN dim_client   cl ON f.client_key   = cl.client_key
+  JOIN dim_project  p  ON f.project_key  = p.project_key
+  -- billable filter removed: synthetic data loaded as billable=0
+  GROUP BY d.year, d.month, d.month_name, c.category_name, cl.client_name, p.project_name
+  ORDER BY d.year, d.month, c.category_name
+")
+print(head(monthly_slice, 15))
+```
+
+### 5.2 Quarterly slice
+
+```{r keyFactQuarterly, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+quarterly_slice <- dbGetQuery(mysql_con, "
+  SELECT
+    f.txn_year                            AS year,
+    CONCAT('Q', f.txn_quarter)            AS quarter,
+    c.category_name                       AS category,
+    cl.client_name                        AS client,
+    p.project_name                        AS project,
+    COUNT(*)                              AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_category c  ON f.category_key = c.category_key
+  JOIN dim_client   cl ON f.client_key   = cl.client_key
+  JOIN dim_project  p  ON f.project_key  = p.project_key
+  -- billable filter removed: synthetic data loaded as billable=0
+  GROUP BY f.txn_year, f.txn_quarter, c.category_name, cl.client_name, p.project_name
+  ORDER BY f.txn_year, f.txn_quarter, c.category_name
+")
+print(quarterly_slice)
+```
+
+### 5.3 Annual slice
+
+```{r keyFactAnnual, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+annual_slice <- dbGetQuery(mysql_con, "
+  SELECT
+    f.txn_year                            AS year,
+    c.category_name                       AS category,
+    cl.client_name                        AS client,
+    p.project_name                        AS project,
+    COUNT(*)                              AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_category c  ON f.category_key = c.category_key
+  JOIN dim_client   cl ON f.client_key   = cl.client_key
+  JOIN dim_project  p  ON f.project_key  = p.project_key
+  -- billable filter removed: synthetic data loaded as billable=0
+  GROUP BY f.txn_year, c.category_name, cl.client_name, p.project_name
+  ORDER BY f.txn_year, c.category_name
+")
+print(annual_slice)
+```
+
+---
+
+## 6 · Employee Expense Summary
+
+```{r employeeSummary, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+emp_summary <- dbGetQuery(mysql_con, "
+  SELECT
+    e.full_name                           AS employee,
+    f.txn_year                            AS year,
+    CONCAT('Q', f.txn_quarter)            AS quarter,
+    COUNT(*)                              AS n_transactions,
+    ROUND(SUM(f.amount_local), 2)         AS total_expense,
+    ROUND(AVG(f.amount_local), 2)         AS avg_expense
+  FROM fact_expenses f
+  JOIN dim_employee e ON f.employee_key = e.employee_key
+  GROUP BY e.full_name, f.txn_year, f.txn_quarter
+  ORDER BY e.full_name, f.txn_year, f.txn_quarter
+")
+print(emp_summary)
+```
+
+---
+
+## 7 · Bar Chart: Total Expense by Category
+## 7 · Bar Chart: Total Expense by Category
+
+```{r barChartCategory, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+
+cat_plot <- dbGetQuery(mysql_con, "
+  SELECT c.category_name AS category,
+         ROUND(ABS(SUM(f.amount_local)), 2) AS total_expense
+  FROM fact_expenses f
+  JOIN dim_category c ON f.category_key = c.category_key
+  GROUP BY c.category_name
+  ORDER BY total_expense DESC
+")
+
+if (nrow(cat_plot) > 0 && any(is.finite(cat_plot$total_expense))) {
+  barplot(
+    cat_plot$total_expense,
+    names.arg = cat_plot$category,
+    main = "Total Expense by Category",
+    xlab = "Category",
+    ylab = "Total Expense (local currency)",
+    col = "steelblue",
+    las = 2,
+    cex.names = 0.85
+  )
+} else {
+  cat("No data available for category chart.\n")
+}
+```
+
+## 8 · Bar Chart: Total Expense by Client
+
+```{r barChartClient, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+
+cl_plot <- dbGetQuery(mysql_con, "
+  SELECT cl.client_name AS client,
+         ROUND(ABS(SUM(f.amount_local)), 2) AS total_expense
+  FROM fact_expenses f
+  JOIN dim_client cl ON f.client_key = cl.client_key
+  GROUP BY cl.client_name
+  ORDER BY total_expense DESC
+")
+
+if (nrow(cl_plot) > 0 && any(is.finite(cl_plot$total_expense))) {
+  barplot(
+    cl_plot$total_expense,
+    names.arg = cl_plot$client,
+    main = "Total Expense by Client",
+    xlab = "Client",
+    ylab = "Total Expense (local currency)",
+    col = "coral",
+    las = 2,
+    cex.names = 0.8
+  )
+} else {
+  cat("No data available for client chart.\n")
+}
+```
+
+---
+
+## 9 · Disconnect
+
+```{r disconnect, eval=TRUE, warning=FALSE, author="Akshay Bannatti"}
+dbDisconnect(mysql_con)
+cat("MySQL connection closed.\n")
+```
